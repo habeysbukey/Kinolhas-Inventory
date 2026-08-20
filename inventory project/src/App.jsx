@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import { Package, PackageMinus, ClipboardList, PlusCircle, Search, RotateCcw, Trash2, X, AlertTriangle, CheckCircle2, Lock, Unlock, Download } from "lucide-react";
 
 // URL of your deployed Google Apps Script Web App (see apps-script/Code.gs and README.md)
-const API_URL = "https://script.google.com/u/0/home/projects/11GKCORh9TxCC_Zg9-EbfOIb372CrLvRwhCn76Rps72ii5_JZ8LDS8S5F/edit";
+const API_URL = "https://script.google.com/macros/s/AKfycbxeFc9Yr3SA_QZv4vonYxf7htqA43qNRRLi2f3sBFOTv1AbL83bQdTder_JnlxlcUNwJg/exec";
 
 const CATEGORIES = ["Stationery", "Craft & Art", "Cleaning", "Electronics", "Sports", "Lab Equipment", "Furniture", "Books", "Other"];
 

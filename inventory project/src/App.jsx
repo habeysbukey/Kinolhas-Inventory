@@ -71,6 +71,7 @@ export default function InventoryPortal() {
   const [pendingAdminAction, setPendingAdminAction] = useState(null);
   const [logSearch, setLogSearch] = useState("");
   const [loggedInUser, setLoggedInUser] = useState(null);
+  const [itemList, setItemList] = useState([]);
 
   async function apiGet() {
     const res = await fetch(`${API_URL}?action=getData`);
@@ -95,6 +96,7 @@ export default function InventoryPortal() {
         const data = await apiGet();
         setItems(data.items || []);
         setLog(data.log || []);
+        setItemList(data.itemList || []);
       } catch (e) {
         setError("Couldn't load data from the spreadsheet. Check your connection or the API_URL setting.");
         setItems([]);
@@ -108,6 +110,7 @@ export default function InventoryPortal() {
       const data = await apiGet();
       setItems(data.items || []);
       setLog(data.log || []);
+      setItemList(data.itemList || []);
       setSyncMsg("Refreshed from the Google Sheet.");
     } catch (e) {
       setSyncMsg("Couldn't refresh — check your connection.");
@@ -124,20 +127,15 @@ export default function InventoryPortal() {
     }
   }
 
-  async function addItem({ name, category, qty }) {
+  async function addStock({ name, qty }) {
     try {
-      const data = await apiPost("addItem", {
-        id: uid(),
-        name,
-        category,
-        totalQty: qty,
-        availableQty: qty,
-      });
+      const data = await apiPost("addStock", { name, qty });
       setItems(data.items || []);
       setLog(data.log || []);
+      setItemList(data.itemList || itemList);
       setShowAddItem(false);
     } catch (e) {
-      setError("Couldn't add the item — check your connection and try again.");
+      setError("Couldn't add stock — check your connection and try again.");
     }
   }
 
@@ -369,7 +367,7 @@ export default function InventoryPortal() {
               <PackageMinus size={15} /> Take out stock
             </button>
             <button style={styles.primaryBtn} onClick={() => requireAdmin(() => setShowAddItem(true))}>
-              <PlusCircle size={15} /> Add item
+              <PlusCircle size={15} /> Add stock
             </button>
           </div>
 
@@ -427,7 +425,7 @@ export default function InventoryPortal() {
       )}
 
       {showAddItem && (
-        <AddItemModal onClose={() => setShowAddItem(false)} onAdd={addItem} />
+        <AddItemModal itemList={itemList} onClose={() => setShowAddItem(false)} onAdd={addStock} />
       )}
       {showBorrow && (
         <BorrowModal item={showBorrow} defaultStaff={loggedInUser} onClose={() => setShowBorrow(null)} onBorrow={issueItem} />
@@ -597,35 +595,56 @@ function LoginScreen({ onLogin }) {
   );
 }
 
-function AddItemModal({ onClose, onAdd }) {
-  const [name, setName] = useState("");
-  const [category, setCategory] = useState(CATEGORIES[0]);
+function AddItemModal({ itemList, onClose, onAdd }) {
+  const sortedCatalog = React.useMemo(
+    () => [...itemList].sort((a, b) => a.name.localeCompare(b.name)),
+    [itemList]
+  );
+  const [selectedName, setSelectedName] = useState(sortedCatalog[0]?.name || "");
   const [qty, setQty] = useState(1);
+
+  const selectedEntry = sortedCatalog.find((it) => it.name === selectedName);
+
+  if (sortedCatalog.length === 0) {
+    return (
+      <div style={styles.modalOverlay} onClick={onClose}>
+        <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+          <div style={styles.modalHeader}>
+            <h2 style={styles.modalTitle}>Add stock</h2>
+            <button style={styles.iconBtn} onClick={onClose}>
+              <X size={17} />
+            </button>
+          </div>
+          <div style={styles.modalSub}>
+            No items found in your ITEM LIST sheet tab yet. Add the item there first, then come back here to restock it.
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={styles.modalOverlay} onClick={onClose}>
       <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
         <div style={styles.modalHeader}>
-          <h2 style={styles.modalTitle}>Add item</h2>
+          <h2 style={styles.modalTitle}>Add stock</h2>
           <button style={styles.iconBtn} onClick={onClose}>
             <X size={17} />
           </button>
         </div>
-        <label style={styles.label}>Item name</label>
-        <input
-          style={styles.input}
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="e.g. Basketball, Projector, Whiteboard marker"
-          autoFocus
-        />
-        <label style={styles.label}>Category</label>
-        <select style={styles.input} value={category} onChange={(e) => setCategory(e.target.value)}>
-          {CATEGORIES.map((c) => (
-            <option key={c} value={c}>{c}</option>
+        <div style={styles.modalSub}>
+          Pick an item from your school's item list, then enter how many were received.
+        </div>
+        <label style={styles.label}>Item</label>
+        <select style={styles.input} value={selectedName} onChange={(e) => setSelectedName(e.target.value)}>
+          {sortedCatalog.map((it) => (
+            <option key={it.itemNumber || it.name} value={it.name}>{it.name}</option>
           ))}
         </select>
-        <label style={styles.label}>Total quantity</label>
+        {selectedEntry?.description && (
+          <div style={styles.itemDescription}>{selectedEntry.description}</div>
+        )}
+        <label style={styles.label}>Quantity received</label>
         <input
           style={styles.input}
           type="number"
@@ -634,11 +653,11 @@ function AddItemModal({ onClose, onAdd }) {
           onChange={(e) => setQty(Math.max(1, parseInt(e.target.value) || 1))}
         />
         <button
-          style={{ ...styles.primaryBtn, ...styles.modalSubmit, opacity: name.trim() ? 1 : 0.5 }}
-          disabled={!name.trim()}
-          onClick={() => onAdd({ name: name.trim(), category, qty })}
+          style={{ ...styles.primaryBtn, ...styles.modalSubmit, opacity: selectedName ? 1 : 0.5 }}
+          disabled={!selectedName}
+          onClick={() => onAdd({ name: selectedName, qty })}
         >
-          Add to ledger
+          Add to stock
         </button>
       </div>
     </div>
@@ -1299,6 +1318,15 @@ const styles = {
   modalHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 },
   modalTitle: { fontFamily: "'Zilla Slab', serif", fontSize: 18, fontWeight: 700, margin: 0, color: colors.mossDark },
   modalSub: { fontSize: 12, color: colors.faint, marginBottom: 14 },
+  itemDescription: {
+    fontSize: 12,
+    color: colors.faint,
+    background: colors.paper,
+    borderRadius: 6,
+    padding: "8px 10px",
+    marginTop: 6,
+    lineHeight: 1.5,
+  },
   label: { display: "block", fontSize: 11.5, fontWeight: 600, color: colors.faint, marginTop: 12, marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.04em" },
   input: {
     width: "100%",

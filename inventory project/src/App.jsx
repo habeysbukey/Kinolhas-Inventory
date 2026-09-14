@@ -24,7 +24,11 @@ function todayStr() {
 
 function fmtDate(d) {
   if (!d) return "—";
-  const dt = new Date(d + "T00:00:00");
+  // Google Sheets sometimes auto-converts a plain "YYYY-MM-DD" string into a
+  // real Date cell, which comes back from the API as a full ISO string —
+  // handle both that and a plain date string.
+  const dt = typeof d === "string" && d.includes("T") ? new Date(d) : new Date(d + "T00:00:00");
+  if (isNaN(dt.getTime())) return String(d);
   return dt.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
 }
 
@@ -70,8 +74,10 @@ export default function InventoryPortal() {
   const [showPinPrompt, setShowPinPrompt] = useState(false);
   const [pendingAdminAction, setPendingAdminAction] = useState(null);
   const [logSearch, setLogSearch] = useState("");
+  const [stockInSearch, setStockInSearch] = useState("");
   const [loggedInUser, setLoggedInUser] = useState(null);
   const [itemList, setItemList] = useState([]);
+  const [stockInLog, setStockInLog] = useState([]);
 
   async function apiGet() {
     const res = await fetch(`${API_URL}?action=getData`);
@@ -96,6 +102,7 @@ export default function InventoryPortal() {
         const data = await apiGet();
         setItems(data.items || []);
         setLog(data.log || []);
+        setStockInLog(data.stockInLog || []);
         setItemList(data.itemList || []);
       } catch (e) {
         setError("Couldn't load data from the spreadsheet. Check your connection or the API_URL setting.");
@@ -110,6 +117,7 @@ export default function InventoryPortal() {
       const data = await apiGet();
       setItems(data.items || []);
       setLog(data.log || []);
+      setStockInLog(data.stockInLog || []);
       setItemList(data.itemList || []);
       setSyncMsg("Refreshed from the Google Sheet.");
     } catch (e) {
@@ -127,11 +135,12 @@ export default function InventoryPortal() {
     }
   }
 
-  async function addStock({ name, qty }) {
+  async function addStock(payload) {
     try {
-      const data = await apiPost("addStock", { name, qty });
+      const data = await apiPost("addStock", payload);
       setItems(data.items || []);
       setLog(data.log || []);
+      setStockInLog(data.stockInLog || []);
       setItemList(data.itemList || itemList);
       setShowAddItem(false);
     } catch (e) {
@@ -246,6 +255,31 @@ export default function InventoryPortal() {
     downloadCsv(`kinolhas-school-stock-levels-${todayStr()}.csv`, rows);
   }
 
+  const filteredStockInLog = useMemo(() => {
+    if (!stockInLog) return [];
+    const q = stockInSearch.trim().toLowerCase();
+    if (!q) return stockInLog;
+    return stockInLog.filter(
+      (r) =>
+        (r.itemName || "").toLowerCase().includes(q) ||
+        (r.supplier || "").toLowerCase().includes(q) ||
+        (r.invoiceNumber || "").toLowerCase().includes(q) ||
+        (r.poNumber || "").toLowerCase().includes(q) ||
+        (r.storeLocation || "").toLowerCase().includes(q)
+    );
+  }, [stockInLog, stockInSearch]);
+
+  function exportStockInCsv() {
+    const rows = [
+      ["Item", "Quantity", "Store location", "Supplier", "Invoice number", "Date", "PO number", "PO date", "Rate", "Item cost"],
+      ...filteredStockInLog.map((r) => [
+        r.itemName, r.qty, r.storeLocation, r.supplier, r.invoiceNumber,
+        fmtDate(r.date), r.poNumber, fmtDate(r.poDate), r.rate, r.itemCost,
+      ]),
+    ];
+    downloadCsv(`kinolhas-school-stock-in-log-${todayStr()}.csv`, rows);
+  }
+
   const totalItems = items ? items.reduce((s, it) => s + it.totalQty, 0) : 0;
   const totalIssued = items ? items.reduce((s, it) => s + (it.totalQty - it.availableQty), 0) : 0;
 
@@ -336,6 +370,12 @@ export default function InventoryPortal() {
         >
           <ClipboardList size={15} /> Stock Out Log
         </button>
+        <button
+          style={tab === "in" ? { ...styles.tab, ...styles.tabActive } : styles.tab}
+          onClick={() => setTab("in")}
+        >
+          <PlusCircle size={15} /> Stock In Log
+        </button>
         <button style={styles.syncBtn} onClick={refreshFromSheet} title="Reload the latest data from the Google Sheet">
           <RotateCcw size={13} /> Refresh from sheet
         </button>
@@ -418,6 +458,36 @@ export default function InventoryPortal() {
             <div style={styles.logList}>
               {filteredLog.map((r) => (
                 <LogRow key={r.id} record={r} />
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
+      {tab === "in" && (
+        <section>
+          <div style={styles.toolbar}>
+            <div style={styles.searchWrap}>
+              <Search size={15} color={colors.faint} />
+              <input
+                style={styles.searchInput}
+                placeholder="Search by item, supplier, invoice, or PO number…"
+                value={stockInSearch}
+                onChange={(e) => setStockInSearch(e.target.value)}
+              />
+            </div>
+            <button style={styles.primaryBtn} onClick={exportStockInCsv}>
+              <Download size={15} /> Export receiving log
+            </button>
+          </div>
+          {filteredStockInLog.length === 0 ? (
+            <EmptyState
+              text={stockInLog.length === 0 ? "No stock received yet. Records appear here once you add stock with \"Add stock\"." : "No entries match that search."}
+            />
+          ) : (
+            <div style={styles.logList}>
+              {filteredStockInLog.map((r) => (
+                <StockInRow key={r.id} record={r} />
               ))}
             </div>
           )}
@@ -515,6 +585,28 @@ function LogRow({ record }) {
   );
 }
 
+function StockInRow({ record }) {
+  const metaParts = [
+    record.supplier,
+    record.storeLocation,
+    record.invoiceNumber ? `Inv# ${record.invoiceNumber}` : null,
+    record.poNumber ? `PO# ${record.poNumber}` : null,
+    fmtDate(record.date),
+  ].filter(Boolean);
+  return (
+    <div style={styles.logRow}>
+      <div style={{ ...styles.stamp, ...styles.stampIn }}>IN</div>
+      <div style={styles.logMain}>
+        <div style={styles.logItemName}>
+          {record.itemName} <span style={styles.logQty}>×{record.qty}</span>
+          {record.itemCost > 0 && <span style={styles.logQty}> · MVR {record.itemCost}</span>}
+        </div>
+        <div style={styles.logMeta}>{metaParts.join(" · ")}</div>
+      </div>
+    </div>
+  );
+}
+
 function EmptyState({ text }) {
   return (
     <div style={styles.empty}>
@@ -596,14 +688,31 @@ function LoginScreen({ onLogin }) {
 }
 
 function AddItemModal({ itemList, onClose, onAdd }) {
-  const sortedCatalog = React.useMemo(
+  const sortedCatalog = useMemo(
     () => [...itemList].sort((a, b) => a.name.localeCompare(b.name)),
     [itemList]
   );
   const [selectedName, setSelectedName] = useState(sortedCatalog[0]?.name || "");
   const [qty, setQty] = useState(1);
+  const [storeLocation, setStoreLocation] = useState("");
+  const [supplier, setSupplier] = useState("");
+  const [invoiceNumber, setInvoiceNumber] = useState("");
+  const [date, setDate] = useState(todayStr());
+  const [poNumber, setPoNumber] = useState("");
+  const [poDate, setPoDate] = useState(todayStr());
+  const [rate, setRate] = useState("");
+  const [itemCost, setItemCost] = useState("");
+  const [costEdited, setCostEdited] = useState(false);
 
   const selectedEntry = sortedCatalog.find((it) => it.name === selectedName);
+
+  // Auto-suggest item cost as qty × rate, unless the user has typed their own value
+  useEffect(() => {
+    if (!costEdited && rate !== "") {
+      const computed = (parseFloat(rate) || 0) * (parseInt(qty) || 0);
+      setItemCost(computed ? String(computed) : "");
+    }
+  }, [qty, rate, costEdited]);
 
   if (sortedCatalog.length === 0) {
     return (
@@ -623,9 +732,24 @@ function AddItemModal({ itemList, onClose, onAdd }) {
     );
   }
 
+  function handleSubmit() {
+    onAdd({
+      name: selectedName,
+      qty,
+      storeLocation: storeLocation.trim(),
+      supplier: supplier.trim(),
+      invoiceNumber: invoiceNumber.trim(),
+      date,
+      poNumber: poNumber.trim(),
+      poDate,
+      rate: parseFloat(rate) || 0,
+      itemCost: parseFloat(itemCost) || 0,
+    });
+  }
+
   return (
     <div style={styles.modalOverlay} onClick={onClose}>
-      <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+      <div style={{ ...styles.modal, maxWidth: 440 }} onClick={(e) => e.stopPropagation()}>
         <div style={styles.modalHeader}>
           <h2 style={styles.modalTitle}>Add stock</h2>
           <button style={styles.iconBtn} onClick={onClose}>
@@ -633,8 +757,9 @@ function AddItemModal({ itemList, onClose, onAdd }) {
           </button>
         </div>
         <div style={styles.modalSub}>
-          Pick an item from your school's item list, then enter how many were received.
+          Pick an item from your school's item list, then fill in the goods-received details.
         </div>
+
         <label style={styles.label}>Item</label>
         <select style={styles.input} value={selectedName} onChange={(e) => setSelectedName(e.target.value)}>
           {sortedCatalog.map((it) => (
@@ -644,18 +769,93 @@ function AddItemModal({ itemList, onClose, onAdd }) {
         {selectedEntry?.description && (
           <div style={styles.itemDescription}>{selectedEntry.description}</div>
         )}
-        <label style={styles.label}>Quantity received</label>
+
+        <div style={styles.formRow2}>
+          <div>
+            <label style={styles.label}>Quantity received</label>
+            <input
+              style={styles.input}
+              type="number"
+              min={1}
+              value={qty}
+              onChange={(e) => setQty(Math.max(1, parseInt(e.target.value) || 1))}
+            />
+          </div>
+          <div>
+            <label style={styles.label}>Store location</label>
+            <input
+              style={styles.input}
+              value={storeLocation}
+              onChange={(e) => setStoreLocation(e.target.value)}
+              placeholder="e.g. Main store"
+            />
+          </div>
+        </div>
+
+        <label style={styles.label}>Supplier</label>
         <input
           style={styles.input}
-          type="number"
-          min={1}
-          value={qty}
-          onChange={(e) => setQty(Math.max(1, parseInt(e.target.value) || 1))}
+          value={supplier}
+          onChange={(e) => setSupplier(e.target.value)}
+          placeholder="e.g. Male' Hardware Pvt Ltd"
         />
+
+        <div style={styles.formRow2}>
+          <div>
+            <label style={styles.label}>Invoice number</label>
+            <input style={styles.input} value={invoiceNumber} onChange={(e) => setInvoiceNumber(e.target.value)} />
+          </div>
+          <div>
+            <label style={styles.label}>Date</label>
+            <input style={styles.input} type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+          </div>
+        </div>
+
+        <div style={styles.formRow2}>
+          <div>
+            <label style={styles.label}>PO number</label>
+            <input style={styles.input} value={poNumber} onChange={(e) => setPoNumber(e.target.value)} />
+          </div>
+          <div>
+            <label style={styles.label}>PO date</label>
+            <input style={styles.input} type="date" value={poDate} onChange={(e) => setPoDate(e.target.value)} />
+          </div>
+        </div>
+
+        <div style={styles.formRow2}>
+          <div>
+            <label style={styles.label}>Rate (per unit)</label>
+            <input
+              style={styles.input}
+              type="number"
+              min={0}
+              step="0.01"
+              value={rate}
+              onChange={(e) => setRate(e.target.value)}
+              placeholder="0.00"
+            />
+          </div>
+          <div>
+            <label style={styles.label}>Item cost (total)</label>
+            <input
+              style={styles.input}
+              type="number"
+              min={0}
+              step="0.01"
+              value={itemCost}
+              onChange={(e) => {
+                setItemCost(e.target.value);
+                setCostEdited(true);
+              }}
+              placeholder="0.00"
+            />
+          </div>
+        </div>
+
         <button
           style={{ ...styles.primaryBtn, ...styles.modalSubmit, opacity: selectedName ? 1 : 0.5 }}
           disabled={!selectedName}
-          onClick={() => onAdd({ name: selectedName, qty })}
+          onClick={handleSubmit}
         >
           Add to stock
         </button>
@@ -1282,6 +1482,7 @@ const styles = {
     border: "1.5px solid currentColor",
   },
   stampOut: { color: colors.rust, background: "#F7E9E2" },
+  stampIn: { color: colors.moss, background: "#E7EEE2" },
   logMain: { flex: 1, minWidth: 0 },
   logItemName: { fontFamily: "'Zilla Slab', serif", fontSize: 15, fontWeight: 600 },
   logQty: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 12.5, color: colors.faint, fontWeight: 500 },
@@ -1326,6 +1527,11 @@ const styles = {
     padding: "8px 10px",
     marginTop: 6,
     lineHeight: 1.5,
+  },
+  formRow2: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 10,
   },
   label: { display: "block", fontSize: 11.5, fontWeight: 600, color: colors.faint, marginTop: 12, marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.04em" },
   input: {

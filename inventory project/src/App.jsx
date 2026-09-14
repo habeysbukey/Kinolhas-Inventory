@@ -8,6 +8,7 @@ const CATEGORIES = ["Stationery", "Craft & Art", "Cleaning", "Electronics", "Spo
 
 
 const STAFF_NAMES = ["Ahmed Suhail", "Aishath Aamaal", "Aishath Muna", "Aminath Shahma", "Fathimath Rihula", "Mohamed Thohir", "Musthafa Abdul Haris", "Shaufa Ahmed", "Aminath Fazla", "Ahmed Shamweel"];
+const STORE_LOCATIONS = ["Office", "Safe Room", "Science Room", "Main Store", "Sports Room"];
 const ADMIN_PIN = "MV550";
 const LOGIN_PASSWORD = "MV550";
 const LOW_STOCK_RATIO = 0.15; // flag items at or below 15% of their original stock
@@ -76,7 +77,6 @@ export default function InventoryPortal() {
   const [logSearch, setLogSearch] = useState("");
   const [stockInSearch, setStockInSearch] = useState("");
   const [loggedInUser, setLoggedInUser] = useState(null);
-  const [itemList, setItemList] = useState([]);
   const [stockInLog, setStockInLog] = useState([]);
 
   async function apiGet() {
@@ -103,7 +103,6 @@ export default function InventoryPortal() {
         setItems(data.items || []);
         setLog(data.log || []);
         setStockInLog(data.stockInLog || []);
-        setItemList(data.itemList || []);
       } catch (e) {
         setError("Couldn't load data from the spreadsheet. Check your connection or the API_URL setting.");
         setItems([]);
@@ -118,7 +117,6 @@ export default function InventoryPortal() {
       setItems(data.items || []);
       setLog(data.log || []);
       setStockInLog(data.stockInLog || []);
-      setItemList(data.itemList || []);
       setSyncMsg("Refreshed from the Google Sheet.");
     } catch (e) {
       setSyncMsg("Couldn't refresh — check your connection.");
@@ -141,7 +139,6 @@ export default function InventoryPortal() {
       setItems(data.items || []);
       setLog(data.log || []);
       setStockInLog(data.stockInLog || []);
-      setItemList(data.itemList || itemList);
       setShowAddItem(false);
     } catch (e) {
       setError("Couldn't add stock — check your connection and try again.");
@@ -495,7 +492,7 @@ export default function InventoryPortal() {
       )}
 
       {showAddItem && (
-        <AddItemModal itemList={itemList} onClose={() => setShowAddItem(false)} onAdd={addStock} />
+        <AddItemModal items={items} stockInLog={stockInLog} onClose={() => setShowAddItem(false)} onAdd={addStock} />
       )}
       {showBorrow && (
         <BorrowModal item={showBorrow} defaultStaff={loggedInUser} onClose={() => setShowBorrow(null)} onBorrow={issueItem} />
@@ -687,15 +684,27 @@ function LoginScreen({ onLogin }) {
   );
 }
 
-function AddItemModal({ itemList, onClose, onAdd }) {
-  const sortedCatalog = useMemo(
-    () => [...itemList].sort((a, b) => a.name.localeCompare(b.name)),
-    [itemList]
-  );
-  const [selectedName, setSelectedName] = useState(sortedCatalog[0]?.name || "");
+function AddItemModal({ items, stockInLog, onClose, onAdd }) {
+  const itemOptions = useMemo(() => {
+    const set = new Set([
+      ...(stockInLog || []).map((r) => (r.itemName || "").trim()),
+      ...(items || []).map((it) => (it.name || "").trim()),
+    ].filter(Boolean));
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [stockInLog, items]);
+  const supplierOptions = useMemo(() => {
+    const set = new Set((stockInLog || []).map((r) => (r.supplier || "").trim()).filter(Boolean));
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [stockInLog]);
+
+  const [selectedItem, setSelectedItem] = useState(itemOptions[0] || "__other__");
+  const [customItem, setCustomItem] = useState("");
+  const [newItemDescription, setNewItemDescription] = useState("");
   const [qty, setQty] = useState(1);
-  const [storeLocation, setStoreLocation] = useState("");
-  const [supplier, setSupplier] = useState("");
+  const [selectedStoreLocation, setSelectedStoreLocation] = useState(STORE_LOCATIONS[0]);
+  const [customStoreLocation, setCustomStoreLocation] = useState("");
+  const [selectedSupplier, setSelectedSupplier] = useState(supplierOptions[0] || "__other__");
+  const [customSupplier, setCustomSupplier] = useState("");
   const [invoiceNumber, setInvoiceNumber] = useState("");
   const [date, setDate] = useState(todayStr());
   const [poNumber, setPoNumber] = useState("");
@@ -704,7 +713,13 @@ function AddItemModal({ itemList, onClose, onAdd }) {
   const [itemCost, setItemCost] = useState("");
   const [costEdited, setCostEdited] = useState(false);
 
-  const selectedEntry = sortedCatalog.find((it) => it.name === selectedName);
+  const isOtherItem = selectedItem === "__other__";
+  const itemName = isOtherItem ? customItem.trim() : selectedItem;
+  const existingItem = !isOtherItem ? (items || []).find((it) => it.name === selectedItem) : null;
+  const isOtherLocation = selectedStoreLocation === "__other__";
+  const storeLocation = isOtherLocation ? customStoreLocation.trim() : selectedStoreLocation;
+  const isOtherSupplier = selectedSupplier === "__other__";
+  const supplier = isOtherSupplier ? customSupplier.trim() : selectedSupplier;
 
   // Auto-suggest item cost as qty × rate, unless the user has typed their own value
   useEffect(() => {
@@ -714,30 +729,13 @@ function AddItemModal({ itemList, onClose, onAdd }) {
     }
   }, [qty, rate, costEdited]);
 
-  if (sortedCatalog.length === 0) {
-    return (
-      <div style={styles.modalOverlay} onClick={onClose}>
-        <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
-          <div style={styles.modalHeader}>
-            <h2 style={styles.modalTitle}>Add stock</h2>
-            <button style={styles.iconBtn} onClick={onClose}>
-              <X size={17} />
-            </button>
-          </div>
-          <div style={styles.modalSub}>
-            No items found in your ITEM LIST sheet tab yet. Add the item there first, then come back here to restock it.
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   function handleSubmit() {
     onAdd({
-      name: selectedName,
+      name: itemName,
       qty,
-      storeLocation: storeLocation.trim(),
-      supplier: supplier.trim(),
+      description: isOtherItem ? newItemDescription.trim() : undefined,
+      storeLocation,
+      supplier,
       invoiceNumber: invoiceNumber.trim(),
       date,
       poNumber: poNumber.trim(),
@@ -757,17 +755,35 @@ function AddItemModal({ itemList, onClose, onAdd }) {
           </button>
         </div>
         <div style={styles.modalSub}>
-          Pick an item from your school's item list, then fill in the goods-received details.
+          Pick an item, or choose "Other" to add a brand-new one, then fill in the goods-received details.
         </div>
 
         <label style={styles.label}>Item</label>
-        <select style={styles.input} value={selectedName} onChange={(e) => setSelectedName(e.target.value)}>
-          {sortedCatalog.map((it) => (
-            <option key={it.itemNumber || it.name} value={it.name}>{it.name}</option>
+        <select style={styles.input} value={selectedItem} onChange={(e) => setSelectedItem(e.target.value)}>
+          {itemOptions.map((name) => (
+            <option key={name} value={name}>{name}</option>
           ))}
+          <option value="__other__">Other (new item)…</option>
         </select>
-        {selectedEntry?.description && (
-          <div style={styles.itemDescription}>{selectedEntry.description}</div>
+        {isOtherItem ? (
+          <>
+            <input
+              style={{ ...styles.input, marginTop: 8 }}
+              value={customItem}
+              onChange={(e) => setCustomItem(e.target.value)}
+              placeholder="Enter new item name"
+            />
+            <input
+              style={{ ...styles.input, marginTop: 8 }}
+              value={newItemDescription}
+              onChange={(e) => setNewItemDescription(e.target.value)}
+              placeholder="Description (optional)"
+            />
+          </>
+        ) : (
+          existingItem?.description && (
+            <div style={styles.itemDescription}>{existingItem.description}</div>
+          )
         )}
 
         <div style={styles.formRow2}>
@@ -783,22 +799,46 @@ function AddItemModal({ itemList, onClose, onAdd }) {
           </div>
           <div>
             <label style={styles.label}>Store location</label>
-            <input
+            <select
               style={styles.input}
-              value={storeLocation}
-              onChange={(e) => setStoreLocation(e.target.value)}
-              placeholder="e.g. Main store"
-            />
+              value={selectedStoreLocation}
+              onChange={(e) => setSelectedStoreLocation(e.target.value)}
+            >
+              {STORE_LOCATIONS.map((loc) => (
+                <option key={loc} value={loc}>{loc}</option>
+              ))}
+              <option value="__other__">Other…</option>
+            </select>
           </div>
         </div>
+        {isOtherLocation && (
+          <input
+            style={{ ...styles.input, marginTop: -6, marginBottom: 12 }}
+            value={customStoreLocation}
+            onChange={(e) => setCustomStoreLocation(e.target.value)}
+            placeholder="Enter store location"
+          />
+        )}
 
         <label style={styles.label}>Supplier</label>
-        <input
+        <select
           style={styles.input}
-          value={supplier}
-          onChange={(e) => setSupplier(e.target.value)}
-          placeholder="e.g. Male' Hardware Pvt Ltd"
-        />
+          value={selectedSupplier}
+          onChange={(e) => setSelectedSupplier(e.target.value)}
+        >
+          {supplierOptions.map((s) => (
+            <option key={s} value={s}>{s}</option>
+          ))}
+          <option value="__other__">Other (new supplier)…</option>
+        </select>
+        {isOtherSupplier && (
+          <input
+            style={{ ...styles.input, marginTop: 8 }}
+            value={customSupplier}
+            onChange={(e) => setCustomSupplier(e.target.value)}
+            placeholder="e.g. Male' Hardware Pvt Ltd"
+          />
+        )}
 
         <div style={styles.formRow2}>
           <div>
@@ -853,8 +893,8 @@ function AddItemModal({ itemList, onClose, onAdd }) {
         </div>
 
         <button
-          style={{ ...styles.primaryBtn, ...styles.modalSubmit, opacity: selectedName ? 1 : 0.5 }}
-          disabled={!selectedName}
+          style={{ ...styles.primaryBtn, ...styles.modalSubmit, opacity: itemName ? 1 : 0.5 }}
+          disabled={!itemName}
           onClick={handleSubmit}
         >
           Add to stock

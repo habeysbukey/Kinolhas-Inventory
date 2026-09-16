@@ -68,13 +68,15 @@ export default function InventoryPortal() {
   const [search, setSearch] = useState("");
   const [error, setError] = useState("");
   const [showAddItem, setShowAddItem] = useState(false);
-  const [showBorrow, setShowBorrow] = useState(null); // item being borrowed
+  const [showBorrow, setShowBorrow] = useState(null); // item being requested
+  const [showIssueRequest, setShowIssueRequest] = useState(null); // pending request being reviewed
   const [showMultiIssue, setShowMultiIssue] = useState(false);
   const [syncMsg, setSyncMsg] = useState("");
   const [isAdmin, setIsAdmin] = useState(false);
   const [showPinPrompt, setShowPinPrompt] = useState(false);
   const [pendingAdminAction, setPendingAdminAction] = useState(null);
   const [logSearch, setLogSearch] = useState("");
+  const [requestSearch, setRequestSearch] = useState("");
   const [stockInSearch, setStockInSearch] = useState("");
   const [loggedInUser, setLoggedInUser] = useState(null);
   const [stockInLog, setStockInLog] = useState([]);
@@ -155,25 +157,20 @@ export default function InventoryPortal() {
     }
   }
 
-  async function issueItem({ itemId, takenBy, role, qty }) {
-    const item = items.find((it) => it.id === itemId);
-    if (!item || qty < 1 || qty > item.availableQty) return;
+  async function requestSingleItem({ requestedBy, role, purpose, requestedDate, lines }) {
+    const line = lines[0];
+    const item = items.find((it) => it.id === line.itemId);
+    if (!item || line.qty < 1 || line.qty > item.availableQty) return;
     try {
-      const data = await apiPost("issue", {
-        takenBy,
-        role,
-        date: todayStr(),
-        lines: [{ itemId, qty }],
-      });
-      setItems(data.items || []);
+      const data = await apiPost("requestStock", { requestedBy, role, purpose, requestedDate, lines });
       setLog(data.log || []);
       setShowBorrow(null);
     } catch (e) {
-      setError("Couldn't take out stock — check your connection and try again.");
+      setError("Couldn't submit the request — check your connection and try again.");
     }
   }
 
-  async function takeOutMultiple({ takenBy, role, lines }) {
+  async function requestMultipleItems({ requestedBy, role, purpose, requestedDate, lines }) {
     // lines: [{ itemId, qty }] — may reference items across different categories
     const stockLeft = {};
     items.forEach((it) => (stockLeft[it.id] = it.availableQty));
@@ -189,19 +186,24 @@ export default function InventoryPortal() {
     if (validLines.length === 0) return false;
 
     try {
-      const data = await apiPost("issue", {
-        takenBy,
-        role,
-        date: todayStr(),
-        lines: validLines,
-      });
-      setItems(data.items || []);
+      const data = await apiPost("requestStock", { requestedBy, role, purpose, requestedDate, lines: validLines });
       setLog(data.log || []);
       setShowMultiIssue(false);
       return true;
     } catch (e) {
-      setError("Couldn't take out stock — check your connection and try again.");
+      setError("Couldn't submit the request — check your connection and try again.");
       return false;
+    }
+  }
+
+  async function issueRequestAction({ requestId, issuedBy, remarks, issueDate }) {
+    try {
+      const data = await apiPost("issueRequest", { requestId, issuedBy, remarks, issueDate });
+      setItems(data.items || []);
+      setLog(data.log || []);
+      setShowIssueRequest(null);
+    } catch (e) {
+      setError("Couldn't issue the request — check your connection and try again.");
     }
   }
 
@@ -220,25 +222,44 @@ export default function InventoryPortal() {
     [items]
   );
 
-  const filteredLog = useMemo(() => {
-    if (!log) return [];
-    const q = logSearch.trim().toLowerCase();
-    if (!q) return log;
-    return log.filter(
+  const pendingRequests = useMemo(() => (log || []).filter((r) => r.status === "pending"), [log]);
+  const issuedLog = useMemo(() => (log || []).filter((r) => r.status === "issued"), [log]);
+
+  const filteredRequests = useMemo(() => {
+    const q = requestSearch.trim().toLowerCase();
+    if (!q) return pendingRequests;
+    return pendingRequests.filter(
       (r) =>
         r.itemName.toLowerCase().includes(q) ||
-        r.takenBy.toLowerCase().includes(q) ||
-        (r.role || "").toLowerCase().includes(q) ||
-        fmtDate(r.dateIssued).toLowerCase().includes(q)
+        (r.itemCode || "").toLowerCase().includes(q) ||
+        r.requestedBy.toLowerCase().includes(q) ||
+        (r.purpose || "").toLowerCase().includes(q)
     );
-  }, [log, logSearch]);
+  }, [pendingRequests, requestSearch]);
+
+  const filteredLog = useMemo(() => {
+    const q = logSearch.trim().toLowerCase();
+    if (!q) return issuedLog;
+    return issuedLog.filter(
+      (r) =>
+        r.itemName.toLowerCase().includes(q) ||
+        (r.itemCode || "").toLowerCase().includes(q) ||
+        r.requestedBy.toLowerCase().includes(q) ||
+        (r.role || "").toLowerCase().includes(q) ||
+        (r.issuedBy || "").toLowerCase().includes(q) ||
+        fmtDate(r.issueDate).toLowerCase().includes(q)
+    );
+  }, [issuedLog, logSearch]);
 
   function exportLogCsv() {
     const rows = [
-      ["Item", "Category", "Quantity", "Taken by", "Role", "Date issued"],
+      ["Item code", "Item", "Category", "Quantity", "Requested by", "Role", "Purpose", "Requested date", "Issued by", "Remarks", "Issue date"],
       ...filteredLog.map((r) => {
         const item = items.find((it) => it.id === r.itemId);
-        return [r.itemName, item ? item.category : "", r.qty, r.takenBy, r.role || "", fmtDate(r.dateIssued)];
+        return [
+          r.itemCode, r.itemName, item ? item.category : "", r.qty, r.requestedBy, r.role || "",
+          r.purpose || "", fmtDate(r.requestedDate), r.issuedBy || "", r.remarks || "", fmtDate(r.issueDate),
+        ];
       }),
     ];
     downloadCsv(`kinolhas-school-stock-out-log-${todayStr()}.csv`, rows);
@@ -362,6 +383,13 @@ export default function InventoryPortal() {
           <Package size={15} /> Items
         </button>
         <button
+          style={tab === "requests" ? { ...styles.tab, ...styles.tabActive } : styles.tab}
+          onClick={() => setTab("requests")}
+        >
+          <ClipboardList size={15} /> Requests
+          {pendingRequests.length > 0 && <span style={styles.tabCount}>{pendingRequests.length}</span>}
+        </button>
+        <button
           style={tab === "log" ? { ...styles.tab, ...styles.tabActive } : styles.tab}
           onClick={() => setTab("log")}
         >
@@ -401,7 +429,7 @@ export default function InventoryPortal() {
               />
             </div>
             <button style={styles.secondaryBtn} onClick={() => setShowMultiIssue(true)}>
-              <PackageMinus size={15} /> Take out stock
+              <PackageMinus size={15} /> Request stock
             </button>
             <button style={styles.primaryBtn} onClick={() => requireAdmin(() => setShowAddItem(true))}>
               <PlusCircle size={15} /> Add stock
@@ -422,6 +450,33 @@ export default function InventoryPortal() {
                   onBorrow={() => setShowBorrow(it)}
                   onDelete={() => requireAdmin(() => deleteItem(it.id))}
                 />
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
+      {tab === "requests" && (
+        <section>
+          <div style={styles.toolbar}>
+            <div style={styles.searchWrap}>
+              <Search size={15} color={colors.faint} />
+              <input
+                style={styles.searchInput}
+                placeholder="Search by item, code, requester, or purpose…"
+                value={requestSearch}
+                onChange={(e) => setRequestSearch(e.target.value)}
+              />
+            </div>
+          </div>
+          {filteredRequests.length === 0 ? (
+            <EmptyState
+              text={pendingRequests.length === 0 ? "No pending requests. Requests appear here once someone requests stock, waiting for the office to review and issue." : "No requests match that search."}
+            />
+          ) : (
+            <div style={styles.logList}>
+              {filteredRequests.map((r) => (
+                <PendingRequestRow key={r.id} record={r} onReview={() => requireAdmin(() => setShowIssueRequest(r))} />
               ))}
             </div>
           )}
@@ -449,7 +504,7 @@ export default function InventoryPortal() {
           </div>
           {filteredLog.length === 0 ? (
             <EmptyState
-              text={log.length === 0 ? "No stock taken out yet. Records appear here once someone takes an item from the store." : "No log entries match that search."}
+              text={issuedLog.length === 0 ? "No stock issued yet. Records appear here once a request has been reviewed and issued." : "No log entries match that search."}
             />
           ) : (
             <div style={styles.logList}>
@@ -495,14 +550,22 @@ export default function InventoryPortal() {
         <AddItemModal items={items} stockInLog={stockInLog} onClose={() => setShowAddItem(false)} onAdd={addStock} />
       )}
       {showBorrow && (
-        <BorrowModal item={showBorrow} defaultStaff={loggedInUser} onClose={() => setShowBorrow(null)} onBorrow={issueItem} />
+        <BorrowModal item={showBorrow} defaultStaff={loggedInUser} onClose={() => setShowBorrow(null)} onBorrow={requestSingleItem} />
       )}
       {showMultiIssue && (
         <MultiIssueModal
           items={items}
           defaultStaff={loggedInUser}
           onClose={() => setShowMultiIssue(false)}
-          onSubmit={takeOutMultiple}
+          onSubmit={requestMultipleItems}
+        />
+      )}
+      {showIssueRequest && (
+        <IssueRequestModal
+          request={showIssueRequest}
+          defaultIssuer={loggedInUser}
+          onClose={() => setShowIssueRequest(null)}
+          onIssue={issueRequestAction}
         />
       )}
       {showPinPrompt && (
@@ -530,7 +593,9 @@ function ItemCard({ item, low, onBorrow, onDelete }) {
       <div style={styles.cardTop}>
         <div>
           <div style={styles.cardCategory}>{item.category}</div>
-          <div style={styles.cardName}>{item.name}</div>
+          <div style={styles.cardName}>
+            {item.name}{item.itemCode ? <span style={styles.cardStockOf}> #{item.itemCode}</span> : null}
+          </div>
         </div>
         <button style={styles.iconBtn} onClick={onDelete} title="Remove item">
           <Trash2 size={14} color={colors.faint} />
@@ -559,25 +624,59 @@ function ItemCard({ item, low, onBorrow, onDelete }) {
         onClick={onBorrow}
         disabled={outOfStock}
       >
-        {outOfStock ? "Out of stock" : "Take out stock"}
+        {outOfStock ? "Out of stock" : "Request stock"}
       </button>
     </div>
   );
 }
 
 function LogRow({ record }) {
+  const metaParts = [
+    record.requestedBy,
+    record.role,
+    record.purpose ? `"${record.purpose}"` : null,
+    `requested ${fmtDate(record.requestedDate)}`,
+  ].filter(Boolean);
+  const issueParts = [
+    record.issuedBy ? `Issued by ${record.issuedBy}` : null,
+    fmtDate(record.issueDate) !== "—" ? `on ${fmtDate(record.issueDate)}` : null,
+    record.remarks ? `· ${record.remarks}` : null,
+  ].filter(Boolean);
   return (
     <div style={styles.logRow}>
       <div style={{ ...styles.stamp, ...styles.stampOut }}>OUT</div>
       <div style={styles.logMain}>
         <div style={styles.logItemName}>
-          {record.itemName} <span style={styles.logQty}>×{record.qty}</span>
+          {record.itemName}
+          {record.itemCode ? <span style={styles.logQty}> #{record.itemCode}</span> : null}{" "}
+          <span style={styles.logQty}>×{record.qty}</span>
+        </div>
+        <div style={styles.logMeta}>{metaParts.join(" · ")}</div>
+        {issueParts.length > 0 && <div style={styles.logMeta}>{issueParts.join(" ")}</div>}
+      </div>
+    </div>
+  );
+}
+
+function PendingRequestRow({ record, onReview }) {
+  return (
+    <div style={styles.logRow}>
+      <div style={{ ...styles.stamp, ...styles.stampPending }}>PENDING</div>
+      <div style={styles.logMain}>
+        <div style={styles.logItemName}>
+          {record.itemName}
+          {record.itemCode ? <span style={styles.logQty}> #{record.itemCode}</span> : null}{" "}
+          <span style={styles.logQty}>×{record.qty}</span>
         </div>
         <div style={styles.logMeta}>
-          {record.takenBy}
-          {record.role ? ` · ${record.role}` : ""} · {fmtDate(record.dateIssued)}
+          {record.requestedBy}
+          {record.role ? ` · ${record.role}` : ""}
+          {record.purpose ? ` · "${record.purpose}"` : ""} · requested {fmtDate(record.requestedDate)}
         </div>
       </div>
+      <button style={styles.returnBtn} onClick={onReview}>
+        Review &amp; issue
+      </button>
     </div>
   );
 }
@@ -700,6 +799,7 @@ function AddItemModal({ items, stockInLog, onClose, onAdd }) {
   const [selectedItem, setSelectedItem] = useState(itemOptions[0] || "__other__");
   const [customItem, setCustomItem] = useState("");
   const [newItemDescription, setNewItemDescription] = useState("");
+  const [newItemCode, setNewItemCode] = useState("");
   const [qty, setQty] = useState(1);
   const [selectedStoreLocation, setSelectedStoreLocation] = useState(STORE_LOCATIONS[0]);
   const [customStoreLocation, setCustomStoreLocation] = useState("");
@@ -733,6 +833,7 @@ function AddItemModal({ items, stockInLog, onClose, onAdd }) {
     onAdd({
       name: itemName,
       qty,
+      itemCode: isOtherItem ? newItemCode.trim() : undefined,
       description: isOtherItem ? newItemDescription.trim() : undefined,
       storeLocation,
       supplier,
@@ -775,14 +876,24 @@ function AddItemModal({ items, stockInLog, onClose, onAdd }) {
             />
             <input
               style={{ ...styles.input, marginTop: 8 }}
+              value={newItemCode}
+              onChange={(e) => setNewItemCode(e.target.value)}
+              placeholder="Item code (e.g. 1)"
+            />
+            <input
+              style={{ ...styles.input, marginTop: 8 }}
               value={newItemDescription}
               onChange={(e) => setNewItemDescription(e.target.value)}
               placeholder="Description (optional)"
             />
           </>
         ) : (
-          existingItem?.description && (
-            <div style={styles.itemDescription}>{existingItem.description}</div>
+          (existingItem?.itemCode || existingItem?.description) && (
+            <div style={styles.itemDescription}>
+              {existingItem.itemCode ? `#${existingItem.itemCode}` : ""}
+              {existingItem.itemCode && existingItem.description ? " — " : ""}
+              {existingItem.description || ""}
+            </div>
           )
         )}
 
@@ -912,6 +1023,8 @@ function BorrowModal({ item, defaultStaff, onClose, onBorrow }) {
   const [customName, setCustomName] = useState(defaultKnown ? "" : defaultStaff || "");
   const [role, setRole] = useState("Teacher");
   const [qty, setQty] = useState(1);
+  const [purpose, setPurpose] = useState("");
+  const [requestedDate, setRequestedDate] = useState(todayStr());
 
   const isOther = selectedStaff === "__other__";
   const takenBy = isOther ? customName.trim() : selectedStaff;
@@ -921,13 +1034,16 @@ function BorrowModal({ item, defaultStaff, onClose, onBorrow }) {
     <div style={styles.modalOverlay} onClick={onClose}>
       <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
         <div style={styles.modalHeader}>
-          <h2 style={styles.modalTitle}>Take out — {item.name}</h2>
+          <h2 style={styles.modalTitle}>
+            Request — {item.name}{item.itemCode ? ` (#${item.itemCode})` : ""}
+          </h2>
           <button style={styles.iconBtn} onClick={onClose}>
             <X size={17} />
           </button>
         </div>
         <div style={styles.modalSub}>{item.availableQty} in stock</div>
-        <label style={styles.label}>Taken by</label>
+        {item.description && <div style={styles.itemDescription}>{item.description}</div>}
+        <label style={styles.label}>Requested by</label>
         <select style={styles.input} value={selectedStaff} onChange={(e) => setSelectedStaff(e.target.value)}>
           {STAFF_NAMES.map((n) => (
             <option key={n} value={n}>{n}</option>
@@ -947,7 +1063,6 @@ function BorrowModal({ item, defaultStaff, onClose, onBorrow }) {
         <select style={styles.input} value={role} onChange={(e) => setRole(e.target.value)}>
           <option>Teacher</option>
           <option>Staff</option>
-          <option>Student</option>
         </select>
         <label style={styles.label}>Quantity</label>
         <input
@@ -958,12 +1073,34 @@ function BorrowModal({ item, defaultStaff, onClose, onBorrow }) {
           value={qty}
           onChange={(e) => setQty(Math.min(item.availableQty, Math.max(1, parseInt(e.target.value) || 1)))}
         />
+        <label style={styles.label}>Purpose</label>
+        <input
+          style={styles.input}
+          value={purpose}
+          onChange={(e) => setPurpose(e.target.value)}
+          placeholder="e.g. Grade 6 art class"
+        />
+        <label style={styles.label}>Requested date</label>
+        <input
+          style={styles.input}
+          type="date"
+          value={requestedDate}
+          onChange={(e) => setRequestedDate(e.target.value)}
+        />
         <button
           style={{ ...styles.primaryBtn, ...styles.modalSubmit, opacity: canSubmit ? 1 : 0.5 }}
           disabled={!canSubmit}
-          onClick={() => onBorrow({ itemId: item.id, takenBy, role, qty })}
+          onClick={() =>
+            onBorrow({
+              requestedBy: takenBy,
+              role,
+              purpose: purpose.trim(),
+              requestedDate,
+              lines: [{ itemId: item.id, qty }],
+            })
+          }
         >
-          Confirm — take out stock
+          Submit request
         </button>
       </div>
     </div>
@@ -987,6 +1124,8 @@ function MultiIssueModal({ items, defaultStaff, onClose, onSubmit }) {
     () => items.filter((it) => it.availableQty > 0).sort((a, b) => a.name.localeCompare(b.name)),
     [items]
   );
+  const [purpose, setPurpose] = useState("");
+  const [requestedDate, setRequestedDate] = useState(todayStr());
 
   function updateRow(rowId, patch) {
     setRows((rs) => rs.map((r) => (r.rowId === rowId ? { ...r, ...patch } : r)));
@@ -1025,7 +1164,7 @@ function MultiIssueModal({ items, defaultStaff, onClose, onSubmit }) {
 
   function handleSubmit() {
     if (!takenBy) {
-      setErrorMsg("Enter who is taking the stock.");
+      setErrorMsg("Enter who is requesting the stock.");
       return;
     }
     if (validRows.length === 0) {
@@ -1037,25 +1176,27 @@ function MultiIssueModal({ items, defaultStaff, onClose, onSubmit }) {
       return;
     }
     const ok = onSubmit({
-      takenBy,
+      requestedBy: takenBy,
       role,
+      purpose: purpose.trim(),
+      requestedDate,
       lines: validRows.map((r) => ({ itemId: r.itemId, qty: parseInt(r.qty) || 0 })),
     });
-    if (!ok) setErrorMsg("Nothing was taken out — check quantities and try again.");
+    if (!ok) setErrorMsg("Nothing was requested — check quantities and try again.");
   }
 
   return (
     <div style={styles.modalOverlay} onClick={onClose}>
       <div style={{ ...styles.modal, maxWidth: 460 }} onClick={(e) => e.stopPropagation()}>
         <div style={styles.modalHeader}>
-          <h2 style={styles.modalTitle}>Take out stock</h2>
+          <h2 style={styles.modalTitle}>Request stock</h2>
           <button style={styles.iconBtn} onClick={onClose}>
             <X size={17} />
           </button>
         </div>
         <div style={styles.modalSub}>Pick multiple items across any category in one go</div>
 
-        <label style={styles.label}>Taken by</label>
+        <label style={styles.label}>Requested by</label>
         <select style={styles.input} value={selectedStaff} onChange={(e) => setSelectedStaff(e.target.value)}>
           {STAFF_NAMES.map((n) => (
             <option key={n} value={n}>{n}</option>
@@ -1075,8 +1216,21 @@ function MultiIssueModal({ items, defaultStaff, onClose, onSubmit }) {
         <select style={styles.input} value={role} onChange={(e) => setRole(e.target.value)}>
           <option>Teacher</option>
           <option>Staff</option>
-          <option>Student</option>
         </select>
+        <label style={styles.label}>Purpose</label>
+        <input
+          style={styles.input}
+          value={purpose}
+          onChange={(e) => setPurpose(e.target.value)}
+          placeholder="e.g. Sports day preparation"
+        />
+        <label style={styles.label}>Requested date</label>
+        <input
+          style={styles.input}
+          type="date"
+          value={requestedDate}
+          onChange={(e) => setRequestedDate(e.target.value)}
+        />
 
         <label style={styles.label}>Items</label>
         <div style={styles.rowsList}>
@@ -1095,7 +1249,7 @@ function MultiIssueModal({ items, defaultStaff, onClose, onSubmit }) {
                   <option value="">Select item…</option>
                   {availableItems.map((it) => (
                     <option key={it.id} value={it.id}>
-                      {it.name} ({it.category}) — {it.availableQty} in stock
+                      {it.name}{it.itemCode ? ` #${it.itemCode}` : ""} ({it.category}) — {it.availableQty} in stock
                     </option>
                   ))}
                 </select>
@@ -1134,7 +1288,80 @@ function MultiIssueModal({ items, defaultStaff, onClose, onSubmit }) {
           disabled={!canSubmit}
           onClick={handleSubmit}
         >
-          Confirm — take out stock
+          Submit request
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function IssueRequestModal({ request, defaultIssuer, onClose, onIssue }) {
+  const defaultKnown = defaultIssuer && STAFF_NAMES.includes(defaultIssuer);
+  const [selectedStaff, setSelectedStaff] = useState(
+    defaultKnown ? defaultIssuer : defaultIssuer ? "__other__" : STAFF_NAMES[0]
+  );
+  const [customName, setCustomName] = useState(defaultKnown ? "" : defaultIssuer || "");
+  const [remarks, setRemarks] = useState("");
+  const [issueDate, setIssueDate] = useState(todayStr());
+
+  const isOther = selectedStaff === "__other__";
+  const issuedBy = isOther ? customName.trim() : selectedStaff;
+
+  return (
+    <div style={styles.modalOverlay} onClick={onClose}>
+      <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalHeader}>
+          <h2 style={styles.modalTitle}>Review &amp; issue</h2>
+          <button style={styles.iconBtn} onClick={onClose}>
+            <X size={17} />
+          </button>
+        </div>
+        <div style={styles.modalSub}>
+          {request.itemName}
+          {request.itemCode ? ` (#${request.itemCode})` : ""} × {request.qty} — requested by {request.requestedBy}
+          {request.role ? ` (${request.role})` : ""}
+          {request.purpose ? `, for "${request.purpose}"` : ""}
+        </div>
+
+        <label style={styles.label}>Issued by</label>
+        <select style={styles.input} value={selectedStaff} onChange={(e) => setSelectedStaff(e.target.value)}>
+          {STAFF_NAMES.map((n) => (
+            <option key={n} value={n}>{n}</option>
+          ))}
+          <option value="__other__">Someone else…</option>
+        </select>
+        {isOther && (
+          <input
+            style={{ ...styles.input, marginTop: 8 }}
+            value={customName}
+            onChange={(e) => setCustomName(e.target.value)}
+            placeholder="Enter name"
+            autoFocus
+          />
+        )}
+
+        <label style={styles.label}>Remarks (optional)</label>
+        <input
+          style={styles.input}
+          value={remarks}
+          onChange={(e) => setRemarks(e.target.value)}
+          placeholder="e.g. Approved, partial stock only"
+        />
+
+        <label style={styles.label}>Issue date</label>
+        <input
+          style={styles.input}
+          type="date"
+          value={issueDate}
+          onChange={(e) => setIssueDate(e.target.value)}
+        />
+
+        <button
+          style={{ ...styles.primaryBtn, ...styles.modalSubmit, opacity: issuedBy ? 1 : 0.5 }}
+          disabled={!issuedBy}
+          onClick={() => onIssue({ requestId: request.id, issuedBy, remarks: remarks.trim(), issueDate })}
+        >
+          Confirm — issue stock
         </button>
       </div>
     </div>
@@ -1523,10 +1750,26 @@ const styles = {
   },
   stampOut: { color: colors.rust, background: "#F7E9E2" },
   stampIn: { color: colors.moss, background: "#E7EEE2" },
+  stampPending: { color: colors.amber, background: "#FBEFE3" },
   logMain: { flex: 1, minWidth: 0 },
   logItemName: { fontFamily: "'Zilla Slab', serif", fontSize: 15, fontWeight: 600 },
   logQty: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 12.5, color: colors.faint, fontWeight: 500 },
   logMeta: { fontSize: 12, color: colors.faint, marginTop: 2 },
+  returnBtn: {
+    display: "flex",
+    alignItems: "center",
+    gap: 5,
+    background: colors.mossDark,
+    color: "#fff",
+    border: "none",
+    borderRadius: 7,
+    padding: "7px 11px",
+    fontSize: 12,
+    fontWeight: 600,
+    fontFamily: "'Inter', sans-serif",
+    cursor: "pointer",
+    flexShrink: 0,
+  },
   empty: {
     display: "flex",
     flexDirection: "column",

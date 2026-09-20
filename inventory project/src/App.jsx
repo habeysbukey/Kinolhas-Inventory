@@ -10,7 +10,6 @@ const CATEGORIES = ["Stationery", "Craft & Art", "Cleaning", "Electronics", "Spo
 const STAFF_NAMES = ["Ahmed Suhail", "Aishath Aamaal", "Aishath Muna", "Aminath Shahma", "Fathimath Rihula", "Mohamed Thohir", "Musthafa Abdul Haris", "Shaufa Ahmed", "Aminath Fazla", "Ahmed Shamweel"];
 const STORE_LOCATIONS = ["Office", "Safe Room", "Science Room", "Main Store", "Sports Room"];
 const ADMIN_PIN = "MV550";
-const LOGIN_PASSWORD = "MV550";
 const LOW_STOCK_RATIO = 0.15; // flag items at or below 15% of their original stock
 const LOW_STOCK_FLOOR = 3; // or fewer than this many units left, whichever is higher
 
@@ -713,25 +712,62 @@ function EmptyState({ text }) {
 }
 
 function LoginScreen({ onLogin }) {
-  const [selectedStaff, setSelectedStaff] = useState(STAFF_NAMES[0]);
-  const [customName, setCustomName] = useState("");
+  const [mode, setMode] = useState("signin"); // "signin" | "signup"
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [wrong, setWrong] = useState(false);
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  const isOther = selectedStaff === "__other__";
-  const name = isOther ? customName.trim() : selectedStaff;
-
-  function submit() {
-    if (!name) {
-      setWrong(true);
+  async function submit() {
+    setError("");
+    if (mode === "signup") {
+      if (!name.trim() || !email.trim() || !password) {
+        setError("Please fill in all fields.");
+        return;
+      }
+      if (password.length < 6) {
+        setError("Password must be at least 6 characters.");
+        return;
+      }
+      if (password !== confirmPassword) {
+        setError("Passwords don't match.");
+        return;
+      }
+    } else if (!email.trim() || !password) {
+      setError("Please enter your email and password.");
       return;
     }
-    if (password === LOGIN_PASSWORD) {
-      onLogin(name);
-    } else {
-      setWrong(true);
-      setPassword("");
+
+    setLoading(true);
+    try {
+      const res = await fetch(API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({
+          action: mode === "signup" ? "signUp" : "signIn",
+          payload:
+            mode === "signup"
+              ? { name: name.trim(), email: email.trim(), password }
+              : { email: email.trim(), password },
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        onLogin(data.user.name);
+      } else {
+        setError(data.error || "Something went wrong — try again.");
+      }
+    } catch (e) {
+      setError("Couldn't connect — check your internet connection.");
     }
+    setLoading(false);
+  }
+
+  function switchMode() {
+    setMode(mode === "signin" ? "signup" : "signin");
+    setError("");
   }
 
   return (
@@ -743,40 +779,69 @@ function LoginScreen({ onLogin }) {
         </div>
         <div style={styles.loginEyebrow}>RAA ATOLL, MALDIVES</div>
         <h1 style={styles.loginTitle}>KINOLHAS SCHOOL STOCK INVENTORY</h1>
-        <p style={styles.loginSub}>For authorized staff only. Sign in to view or request stock.</p>
+        <p style={styles.loginSub}>
+          {mode === "signup"
+            ? "Create an account with your email to use the portal."
+            : "Sign in with your email to view or request stock."}
+        </p>
 
-        <label style={styles.label}>Your name</label>
-        <select style={styles.input} value={selectedStaff} onChange={(e) => setSelectedStaff(e.target.value)}>
-          {STAFF_NAMES.map((n) => (
-            <option key={n} value={n}>{n}</option>
-          ))}
-          <option value="__other__">Someone else…</option>
-        </select>
-        {isOther && (
-          <input
-            style={{ ...styles.input, marginTop: 8 }}
-            value={customName}
-            onChange={(e) => setCustomName(e.target.value)}
-            placeholder="Enter your name"
-          />
+        {mode === "signup" && (
+          <>
+            <label style={styles.label}>Name</label>
+            <input
+              style={styles.input}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Your full name"
+              autoFocus
+            />
+          </>
         )}
 
-        <label style={styles.label}>Portal password</label>
+        <label style={styles.label}>Email</label>
+        <input
+          style={styles.input}
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="you@example.com"
+        />
+
+        <label style={styles.label}>Password</label>
         <input
           style={styles.input}
           type="password"
           value={password}
-          onChange={(e) => {
-            setPassword(e.target.value);
-            setWrong(false);
-          }}
-          onKeyDown={(e) => e.key === "Enter" && submit()}
-          placeholder="Enter password"
+          onChange={(e) => setPassword(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && mode === "signin" && submit()}
+          placeholder={mode === "signup" ? "At least 6 characters" : "Enter password"}
         />
-        {wrong && <div style={styles.modalError}>Incorrect name or password — try again.</div>}
 
-        <button style={{ ...styles.primaryBtn, ...styles.loginSubmit }} onClick={submit}>
-          Sign in
+        {mode === "signup" && (
+          <>
+            <label style={styles.label}>Confirm password</label>
+            <input
+              style={styles.input}
+              type="password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && submit()}
+            />
+          </>
+        )}
+
+        {error && <div style={styles.modalError}>{error}</div>}
+
+        <button
+          style={{ ...styles.primaryBtn, ...styles.loginSubmit, opacity: loading ? 0.6 : 1 }}
+          disabled={loading}
+          onClick={submit}
+        >
+          {loading ? "Please wait…" : mode === "signup" ? "Create account" : "Sign in"}
+        </button>
+
+        <button style={styles.switchModeBtn} onClick={switchMode}>
+          {mode === "signin" ? "Don't have an account? Create one" : "Already have an account? Sign in"}
         </button>
       </div>
     </div>
@@ -1478,6 +1543,18 @@ const styles = {
   },
   loginSub: { fontSize: 12.5, color: colors.faint, margin: "0 0 16px", lineHeight: 1.5 },
   loginSubmit: { width: "100%", justifyContent: "center", marginTop: 18 },
+  switchModeBtn: {
+    width: "100%",
+    background: "none",
+    border: "none",
+    color: colors.moss,
+    fontFamily: "'Inter', sans-serif",
+    fontSize: 12.5,
+    fontWeight: 600,
+    cursor: "pointer",
+    marginTop: 12,
+    padding: 0,
+  },
   header: {
     display: "flex",
     justifyContent: "space-between",
